@@ -1,90 +1,129 @@
+// host.ts
 import { io, Socket } from "socket.io-client";
 import Peer from "simple-peer";
 // @ts-ignore
 import wrtc from "wrtc";
 import fetch from "node-fetch";
 import http from "http";
+import net from "net";
 
-const SIGNALING = "http://SEU_SERVIDOR:3000";
+// Ajuste aqui:
+const SIGNALING_URL = "http://SEU_SERVIDOR:3000";
 const TUNNEL_ID = process.argv[2] || "meu-tunel";
+const LOCAL_PROXY_PORT = 8080;
 
-console.log("[Host] Iniciando host com ID:", TUNNEL_ID);
-const socket: Socket = io(SIGNALING);
-
-socket.on(
-  "connect",
-  () => console.log("[Host] Conectado ao servidor de sinalização", socket.id) // :contentReference[oaicite:9]{index=9}
+console.log(
+  `[Host] Iniciando Host com ID="${TUNNEL_ID}", sinalizando em ${SIGNALING_URL}`
 );
 
-socket.emit("register", { role: "host", id: TUNNEL_ID });
-console.log("[Host] Registro enviado ao servidor"); // :contentReference[oaicite:10]{index=10}
+const socket: Socket = io(SIGNALING_URL);
+socket.on("connect", () => {
+  console.log("[Host] Conectado ao servidor de sinalização:", socket.id);
+  socket.emit("register", { role: "host", id: TUNNEL_ID });
+});
 
-const peer = new Peer({ initiator: true, wrtc });
+const peer = new Peer({
+  initiator: true,
+  wrtc,
+  config: {
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" },
+      // { urls: 'turn:seu.turn.server', username: 'user', credential: 'pass' }
+    ],
+  },
+});
 
 peer.on("signal", (data) => {
-  console.log("[Host] Gerado sinal:", data); // :contentReference[oaicite:11]{index=11}
+  console.log("[Host] Enviando sinal SDP/ICE ao servidor");
   socket.emit("signal", { role: "host", id: TUNNEL_ID, data });
 });
 
-socket.on("signal", (data) => {
-  console.log("[Host] Sinal recebido do servidor:", data);
+socket.on("signal", (data: any) => {
+  console.log("[Host] Recebido sinal do client via servidor");
   peer.signal(data);
 });
 
-peer.on(
-  "connect",
-  () => console.log("[Host] DataChannel aberto") // :contentReference[oaicite:12]{index=12}
-);
+peer.on("connect", () => {
+  console.log("[Host] Canal de dados WebRTC estabelecido");
+});
+
+peer.on("error", (err) => {
+  console.error("[Host] Erro no Peer:", err);
+});
 
 peer.on("data", async (raw) => {
-  console.log("[Host] Requisição recebida via DataChannel");
   try {
     const msg = JSON.parse(raw.toString());
-    console.log("[Host] Fetch para", msg.url);
-    const res = await fetch(msg.url, {
-      method: msg.method,
-      headers: msg.headers,
-    });
-    const buffer = await res.arrayBuffer();
-    peer.send(
-      JSON.stringify({
+    if (msg.type === "http") {
+      console.log(`[Host] HTTP request ➡️ ${msg.method} ${msg.url}`);
+      const res = await fetch(msg.url, {
+        method: msg.method,
+        headers: msg.headers,
+      });
+      const buffer = await res.arrayBuffer();
+      const payload = {
         type: "httpResponse",
         statusCode: res.status,
         headers: Object.fromEntries(res.headers.entries()),
         body: Buffer.from(buffer).toString("base64"),
-      })
-    );
-    console.log("[Host] Resposta enviada ao client"); // :contentReference[oaicite:13]{index=13}
-  } catch (err) {
-    console.error("[Host] Erro no fetch:", err);
+      };
+      console.log(
+        `[Host] HTTP response ← ${res.status} (${(
+          buffer.byteLength / 1024
+        ).toFixed(1)} KB)`
+      );
+      peer.send(JSON.stringify(payload));
+    } else if (msg.type === "tcp") {
+      console.log(`[Host] Túnel TCP ➡️ ${msg.host}:${msg.port}`);
+      const sock = net.connect(msg.port, msg.host, () => {
+        console.log("[Host] Socket TCP conectado ao destino, enviando ACK");
+        peer.send(JSON.stringify({ type: "tcp-ack", id: msg.id }));
+        // agora cria o túnel entre sock <-> DataChannel
+        sock.on("data", (data) => peer.send(data));
+        sock.on("end", () =>
+          console.log("[Host] Socket TCP encerrado pelo destino")
+        );
+      });
+      sock.on("error", (err) => {
+        console.error("[Host] Erro no socket TCP:", err.message);
+        peer.send(
+          JSON.stringify({ type: "tcp-error", id: msg.id, error: err.message })
+        );
+      });
+      // recebe dados do client e encaminha ao sock
+      peer.on("data", (chunk) => {
+        if (typeof chunk !== "string") {
+          sock.write(chunk);
+        }
+      });
+    }
+  } catch (e) {
+    console.error("[Host] Mensagem inválida:", e);
   }
 });
 
-peer.on(
-  "error",
-  (err) => console.error("[Host] Peer error:", err) // :contentReference[oaicite:14]{index=14}
-);
-
-// Proxy HTTP local
-const server = http.createServer((req, res) => {
-  console.log("[Host] Proxy HTTP — requisição:", req.method, req.url);
-  peer.send(
-    JSON.stringify({
+// Proxy HTTP local para teste (opcional)
+http
+  .createServer((req, res) => {
+    // redireciona toda req normal ao túnel HTTP
+    const url = req.url?.startsWith("http")
+      ? req.url
+      : `http://${req.headers.host}${req.url}`;
+    const msg = {
       type: "http",
-      url: req.url,
+      url,
       method: req.method,
       headers: req.headers,
-    })
-  );
-  peer.once("data", (raw) => {
-    const msg = JSON.parse(raw.toString());
-    console.log("[Host] Proxy HTTP — resposta", msg.statusCode);
-    res.writeHead(msg.statusCode, msg.headers);
-    res.write(Buffer.from(msg.body, "base64"));
-    res.end();
+    };
+    peer.send(JSON.stringify(msg));
+    peer.once("data", (raw) => {
+      const rep = JSON.parse(raw.toString());
+      res.writeHead(rep.statusCode, rep.headers);
+      res.end(Buffer.from(rep.body, "base64"));
+    });
+  })
+  .listen(LOCAL_PROXY_PORT, () => {
+    console.log(
+      `[Host] Proxy HTTP local em http://localhost:${LOCAL_PROXY_PORT}`
+    );
   });
-});
-
-server.listen(8080, () => {
-  console.log("[Host] Proxy HTTP rodando em http://localhost:8080"); // :contentReference[oaicite:15]{index=15}
-});

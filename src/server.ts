@@ -1,41 +1,53 @@
+// server.ts
 import { createServer } from "http";
-import { Server } from "socket.io";
+import { Server, Socket } from "socket.io";
 
+const PORT = 3000;
 const httpServer = createServer();
-const io = new Server(httpServer);
+const io = new Server(httpServer, {
+  // opcional: configurações CORS se precisar de domínio diferente
+  cors: { origin: "*" },
+});
 
-// Middleware para logar tentativas de conexão
-io.use((socket, next) => {
-  console.log("[Server] Tentativa de conexão:", socket.id);
-  next();
-}); // :contentReference[oaicite:5]{index=5}
+io.on("connection", (socket: Socket) => {
+  console.log(`[Signal] Cliente conectado: ${socket.id}`);
 
-io.on("connection", (socket) => {
-  console.log(`[Server] Cliente conectado: ${socket.id}`); // conexão :contentReference[oaicite:6]{index=6}
+  socket.on(
+    "register",
+    ({ role, id }: { role: "host" | "client"; id: string }) => {
+      const room = `${id}:${role}`;
+      socket.join(room);
+      console.log(
+        `[Signal] ${role.toUpperCase()} registrado no túnel "${id}" (sala "${room}")`
+      );
+    }
+  );
 
-  socket.on("register", ({ role, id }) => {
-    console.log(`[Server] Registro de ${role} com ID=${id}`);
-    socket.join(`${id}:${role}`);
-  });
-
-  socket.on("signal", ({ role, id, data }) => {
-    console.log(`[Server] Sinal recebido de ${role} (ID=${id}):`, data);
-    const target = role === "host" ? "client" : "host";
-    io.to(`${id}:${target}`).emit("signal", data);
-    console.log(`[Server] Sinal reenviado para ${target}`);
-  });
+  socket.on(
+    "signal",
+    ({
+      role,
+      id,
+      data,
+    }: {
+      role: "host" | "client";
+      id: string;
+      data: any;
+    }) => {
+      const target = role === "host" ? "client" : "host";
+      const room = `${id}:${target}`;
+      console.log(
+        `[Signal] Relay de sinal de ${role} → ${target} na sala "${id}"`
+      );
+      io.to(room).emit("signal", data);
+    }
+  );
 
   socket.on("disconnect", (reason) => {
-    console.log(
-      `[Server] Cliente desconectado: ${socket.id}, motivo: ${reason}`
-    ); // :contentReference[oaicite:7]{index=7}
-  });
-
-  socket.on("error", (err) => {
-    console.error(`[Server] Erro no socket ${socket.id}:`, err);
+    console.log(`[Signal] Cliente desconectado: ${socket.id} (${reason})`);
   });
 });
 
-httpServer.listen(3000, () => {
-  console.log("[Server] Sinalização rodando em http://localhost:3000"); // :contentReference[oaicite:8]{index=8}
+httpServer.listen(PORT, () => {
+  console.log(`[Signal] Servidor rodando em http://0.0.0.0:${PORT}`);
 });
