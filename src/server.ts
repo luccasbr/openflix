@@ -1,53 +1,37 @@
-// server.ts
 import { createServer } from "http";
 import { Server, Socket } from "socket.io";
 
 const PORT = 3000;
 const httpServer = createServer();
-const io = new Server(httpServer, {
-  // opcional: configurações CORS se precisar de domínio diferente
-  cors: { origin: "*" },
-});
+const io = new Server(httpServer, { cors: { origin: "*" } });
 
 io.on("connection", (socket: Socket) => {
-  console.log(`[Signal] Cliente conectado: ${socket.id}`);
-
   socket.on(
     "register",
     ({ role, id }: { role: "host" | "client"; id: string }) => {
       const room = `${id}:${role}`;
       socket.join(room);
-      console.log(
-        `[Signal] ${role.toUpperCase()} registrado no túnel "${id}" (sala "${room}")`
-      );
+      console.log(`[Signal] ${role.toUpperCase()} entrou na sala "${room}"`);
+      // Se ambos host e client estiverem presentes, sinaliza ready
+      const hasHost = io.sockets.adapter.rooms.get(`${id}:host`);
+      const hasClient = io.sockets.adapter.rooms.get(`${id}:client`);
+      if (hasHost && hasClient) {
+        io.to(`${id}:host`).emit("ready");
+        io.to(`${id}:client`).emit("ready");
+        console.log(`[Signal] Emissão de 'ready' para túnel "${id}"`);
+      }
     }
   );
 
-  socket.on(
-    "signal",
-    ({
-      role,
-      id,
-      data,
-    }: {
-      role: "host" | "client";
-      id: string;
-      data: any;
-    }) => {
-      const target = role === "host" ? "client" : "host";
-      const room = `${id}:${target}`;
-      console.log(
-        `[Signal] Relay de sinal de ${role} → ${target} na sala "${id}"`
-      );
-      io.to(room).emit("signal", data);
-    }
-  );
-
-  socket.on("disconnect", (reason) => {
-    console.log(`[Signal] Cliente desconectado: ${socket.id} (${reason})`);
+  socket.on("signal", ({ role, id, data }: any) => {
+    const target = role === "host" ? "client" : "host";
+    io.to(`${id}:${target}`).emit("signal", data);
+    console.log(
+      `[Signal] Relay de sinal de ${role}→${target} no túnel "${id}"`
+    );
   });
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`[Signal] Servidor rodando em http://0.0.0.0:${PORT}`);
+  console.log(`[Signal] Server rodando em http://0.0.0.0:${PORT}`);
 });
