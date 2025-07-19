@@ -1,49 +1,41 @@
-// server.ts
 import { createServer } from "http";
-import { Server, Socket } from "socket.io";
+import { Server } from "socket.io";
 
-const PORT = 3000;
 const httpServer = createServer();
-const io = new Server(httpServer, { cors: { origin: "*" } });
+const io = new Server(httpServer);
 
-io.on("connection", (socket: Socket) => {
-  console.log(`[Signal] Socket conectado: ${socket.id}`);
+// Middleware para logar tentativas de conexão
+io.use((socket, next) => {
+  console.log("[Server] Tentativa de conexão:", socket.id);
+  next();
+}); // :contentReference[oaicite:5]{index=5}
 
-  socket.on(
-    "register",
-    ({ role, id }: { role: "host" | "client"; id: string }) => {
-      const room = `${id}:${role}`;
-      socket.join(room);
-      console.log(
-        `[Signal] ${role.toUpperCase()} registrado na sala "${room}"`
-      );
+io.on("connection", (socket) => {
+  console.log(`[Server] Cliente conectado: ${socket.id}`); // conexão :contentReference[oaicite:6]{index=6}
 
-      // Se já temos host E client, emite 'ready' para ambos
-      const hasHost = io.sockets.adapter.rooms.get(`${id}:host`);
-      const hasClient = io.sockets.adapter.rooms.get(`${id}:client`);
-      if (hasHost && hasClient) {
-        io.to(`${id}:host`).emit("ready");
-        io.to(`${id}:client`).emit("ready");
-        console.log(`[Signal] Emissão de 'ready' para túnel "${id}"`);
-      }
-    }
-  );
+  socket.on("register", ({ role, id }) => {
+    console.log(`[Server] Registro de ${role} com ID=${id}`);
+    socket.join(`${id}:${role}`);
+  });
 
-  socket.on("signal", ({ role, id, data }: any) => {
-    const targetRoom = `${id}:${role === "host" ? "client" : "host"}`;
-    io.to(targetRoom).emit("signal", data);
-    console.log(
-      `[Signal] Relay de sinal de ${role} → ${
-        role === "host" ? "client" : "host"
-      } no túnel "${id}"`
-    );
+  socket.on("signal", ({ role, id, data }) => {
+    console.log(`[Server] Sinal recebido de ${role} (ID=${id}):`, data);
+    const target = role === "host" ? "client" : "host";
+    io.to(`${id}:${target}`).emit("signal", data);
+    console.log(`[Server] Sinal reenviado para ${target}`);
   });
 
   socket.on("disconnect", (reason) => {
-    console.log(`[Signal] Socket desconectou: ${socket.id} (${reason})`);
+    console.log(
+      `[Server] Cliente desconectado: ${socket.id}, motivo: ${reason}`
+    ); // :contentReference[oaicite:7]{index=7}
+  });
+
+  socket.on("error", (err) => {
+    console.error(`[Server] Erro no socket ${socket.id}:`, err);
   });
 });
 
-httpServer.listen(PORT, () => {
-  console.log(`[Signal] Servidor rodando em http://0.0.0.0:${PORT}`);
+httpServer.listen(3000, () => {
+  console.log("[Server] Sinalização rodando em http://localhost:3000"); // :contentReference[oaicite:8]{index=8}
 });

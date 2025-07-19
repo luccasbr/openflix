@@ -1,55 +1,39 @@
-// client.ts
-import http from "http";
 import { io, Socket } from "socket.io-client";
 import Peer from "simple-peer";
 // @ts-ignore
 import wrtc from "wrtc";
-import { v4 as uuid } from "uuid";
+import http from "http";
 
-// CONFIGURAÇÃO
-const SIGNALING_URL = "http://15.228.71.40:3000";
-const TUNNEL_ID = process.argv[2] || "tunnel-test";
-const LOCAL_PROXY_PORT = 8081;
+const SIGNALING = "http://SEU_SERVIDOR:3000";
+const TUNNEL_ID = process.argv[2] || "meu-tunel";
 
-console.log(`[Client] Conectando em ${SIGNALING_URL} com ID="${TUNNEL_ID}"`);
-const socket: Socket = io(SIGNALING_URL);
+console.log("[Client] Iniciando client com ID:", TUNNEL_ID);
+const socket: Socket = io(SIGNALING);
 
-socket.on("connect", () => {
-  console.log("[Client] Socket.IO conectado:", socket.id);
-  socket.emit("register", { role: "client", id: TUNNEL_ID });
-  console.log("[Client] Registro enviado (client)");
+socket.on("connect", () =>
+  console.log("[Client] Conectado ao servidor de sinalização", socket.id)
+);
+socket.emit("register", { role: "client", id: TUNNEL_ID });
+console.log("[Client] Registro enviado ao servidor");
+
+const peer = new Peer({ initiator: false, wrtc });
+
+peer.on("signal", (data) => {
+  console.log("[Client] Gerado sinal:", data);
+  socket.emit("signal", { role: "client", id: TUNNEL_ID, data });
 });
 
-socket.on("ready", () => {
-  console.log("[Client] Evento ready recebido → iniciando WebRTC Peer");
-  const peer = new Peer({
-    initiator: false,
-    wrtc,
-    config: { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] },
-  });
-
-  peer.on("signal", (data) => {
-    console.log("[Client] Enviando signal SDP/ICE ao servidor");
-    socket.emit("signal", { role: "client", id: TUNNEL_ID, data });
-  });
-  socket.on("signal", (data: any) => {
-    console.log("[Client] Sinal recebido do host");
-    peer.signal(data);
-  });
-
-  peer.on("connect", () => {
-    console.log("[Client] Canal de dados WebRTC ESTABELECIDO");
-    startLocalProxy(peer);
-  });
-
-  peer.on("error", (err) => {
-    console.error("[Client] Erro no Peer:", err);
-  });
+socket.on("signal", (data) => {
+  console.log("[Client] Sinal recebido do servidor:", data);
+  peer.signal(data);
 });
 
-function startLocalProxy(peer: Peer.Instance) {
+peer.on("connect", () => {
+  console.log("[Client] DataChannel aberto"); // :contentReference[oaicite:16]{index=16}
+
+  // Proxy HTTP local
   const server = http.createServer((req, res) => {
-    console.log(`[Client][HTTP] ${req.method} ${req.url}`);
+    console.log("[Client] Proxy HTTP — requisição:", req.method, req.url);
     peer.send(
       JSON.stringify({
         type: "http",
@@ -60,54 +44,19 @@ function startLocalProxy(peer: Peer.Instance) {
     );
     peer.once("data", (raw) => {
       const msg = JSON.parse(raw.toString());
+      console.log("[Client] Proxy HTTP — resposta", msg.statusCode);
       res.writeHead(msg.statusCode, msg.headers);
-      res.end(Buffer.from(msg.body, "base64"));
-      console.log(`[Client][HTTP] ← ${msg.statusCode}`);
+      res.write(Buffer.from(msg.body, "base64"));
+      res.end();
     });
   });
 
-  server.on("connect", (req, clientSocket, head) => {
-    const id = uuid();
-    const [host, portStr] = (req.url || "").split(":");
-    const port = parseInt(portStr!, 10);
-    console.log(`[Client][CONNECT] ${host}:${port} (túnel ${id})`);
-
-    // 1) Informa ao host para abrir TCP
-    peer.send(JSON.stringify({ type: "tcp", id, host, port }));
-
-    // 2) Aguarda ACK para estabelecer túnel
-    const onSignal = (raw: Buffer) => {
-      try {
-        const msg = JSON.parse(raw.toString());
-        if (msg.type === "tcp-ack" && msg.id === id) {
-          console.log(`[Client][CONNECT] túnel ${id} estabelecido`);
-          clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-          // passa head se houver
-          if (head && head.length) clientSocket.write(head);
-          // agora túnel bidirecional direto no WebRTC
-          peer.on("data", (chunk) => {
-            if (Buffer.isBuffer(chunk)) clientSocket.write(chunk);
-          });
-          clientSocket.on("data", (chunk) => peer.send(chunk));
-          peer.removeListener("data", onSignal);
-        }
-      } catch {
-        /** ignora não-JSON */
-      }
-    };
-    peer.on("data", onSignal);
-
-    // timeout de 10s
-    setTimeout(() => {
-      peer.removeListener("data", onSignal);
-      clientSocket.end("HTTP/1.1 504 Gateway Timeout\r\n\r\n");
-      console.error(`[Client][CONNECT] Timeout no túnel ${id}`);
-    }, 10000);
+  server.listen(8081, () => {
+    console.log("[Client] Proxy HTTP rodando em http://localhost:8081"); // :contentReference[oaicite:17]{index=17}
   });
+});
 
-  server.listen(LOCAL_PROXY_PORT, () => {
-    console.log(
-      `[Client] Proxy HTTP/HTTPS em http://localhost:${LOCAL_PROXY_PORT}`
-    );
-  });
-}
+peer.on(
+  "error",
+  (err) => console.error("[Client] Peer error:", err) // :contentReference[oaicite:18]{index=18}
+);
