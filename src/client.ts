@@ -4,7 +4,7 @@ import Peer from "simple-peer";
 import wrtc from "wrtc";
 import http from "http";
 
-const SIGNALING = "http://SEU_SERVIDOR:3000";
+const SIGNALING = "http://15.228.71.40:3000";
 const TUNNEL_ID = process.argv[2] || "meu-tunel";
 
 console.log("[Client] Iniciando client com ID:", TUNNEL_ID);

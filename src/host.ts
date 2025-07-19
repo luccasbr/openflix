@@ -5,7 +5,7 @@ import wrtc from "wrtc";
 import fetch from "node-fetch";
 import http from "http";
 
-const SIGNALING = "http://SEU_SERVIDOR:3000";
+const SIGNALING = "http://15.228.71.40:3000";
 const TUNNEL_ID = process.argv[2] || "meu-tunel";
 
 console.log("[Host] Iniciando host com ID:", TUNNEL_ID);
