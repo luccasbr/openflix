@@ -1,12 +1,15 @@
+// host.ts
 import { io, Socket } from "socket.io-client";
 import Peer from "simple-peer";
 // @ts-ignore
 import wrtc from "wrtc";
-import fetch from "node-fetch";
+import http from "http";
+import net from "net";
 
-// Configurações
-const SIGNALING_URL = "http://SEU_SERVIDOR:3000";
-const TUNNEL_ID = process.argv[2] || "meu-tunel";
+// CONFIGURAÇÃO
+const SIGNALING_URL = "http://15.228.71.40:3000";
+const TUNNEL_ID = process.argv[2] || "tunnel-test";
+const LOCAL_PROXY_PORT = 8080;
 
 console.log(`[Host] Conectando em ${SIGNALING_URL} com ID="${TUNNEL_ID}"`);
 const socket: Socket = io(SIGNALING_URL);
@@ -14,10 +17,11 @@ const socket: Socket = io(SIGNALING_URL);
 socket.on("connect", () => {
   console.log("[Host] Socket.IO conectado:", socket.id);
   socket.emit("register", { role: "host", id: TUNNEL_ID });
+  console.log("[Host] Registro enviado (host)");
 });
 
 socket.on("ready", () => {
-  console.log("[Host] Evento ready recebido → iniciando Peer");
+  console.log("[Host] Evento ready recebido → iniciando WebRTC Peer");
   const peer = new Peer({
     initiator: true,
     wrtc,
@@ -25,42 +29,83 @@ socket.on("ready", () => {
   });
 
   peer.on("signal", (data) => {
-    console.log("[Host] Enviando signal ao servidor");
+    console.log("[Host] Enviando signal SDP/ICE ao servidor");
     socket.emit("signal", { role: "host", id: TUNNEL_ID, data });
   });
 
   socket.on("signal", (data: any) => {
-    console.log("[Host] Recebido signal do client");
+    console.log("[Host] Sinal recebido do client");
     peer.signal(data);
   });
 
   peer.on("connect", () => {
-    console.log("[Host] WebRTC conectado, canal de dados aberto");
+    console.log("[Host] Canal de dados WebRTC ESTABELECIDO");
   });
 
-  peer.on("data", async (raw) => {
-    const msg = JSON.parse(raw.toString());
-    if (msg.type === "http") {
-      console.log(`[Host] Proxy HTTP ➡️ ${msg.method} ${msg.url}`);
-      const res = await fetch(msg.url, {
-        method: msg.method,
-        headers: msg.headers,
-      });
-      const body = await res.arrayBuffer();
+  peer.on("error", (err) => {
+    console.error("[Host] Erro no Peer:", err);
+  });
+
+  // HTTP Proxy local opcional
+  http
+    .createServer((req, res) => {
+      const url = req.url?.startsWith("http")
+        ? req.url
+        : `http://${req.headers.host}${req.url}`;
+      console.log(`[Host][HTTP] Requisição: ${req.method} ${url}`);
       peer.send(
         JSON.stringify({
-          type: "httpResponse",
-          statusCode: res.status,
-          headers: Object.fromEntries(res.headers.entries()),
-          body: Buffer.from(body).toString("base64"),
+          type: "http",
+          url,
+          method: req.method,
+          headers: req.headers,
         })
       );
+      peer.once("data", (raw) => {
+        const msg = JSON.parse(raw.toString());
+        res.writeHead(msg.statusCode, msg.headers);
+        res.end(Buffer.from(msg.body, "base64"));
+        console.log(`[Host][HTTP] Resposta ${msg.statusCode} enviada`);
+      });
+    })
+    .listen(LOCAL_PROXY_PORT, () => {
       console.log(
-        `[Host] Response ${res.status} enviada (${(
-          body.byteLength / 1024
-        ).toFixed(1)} KB)`
+        `[Host] Proxy HTTP local em http://localhost:${LOCAL_PROXY_PORT}`
       );
+    });
+
+  // Mecanismo de túnel TCP para CONNECT (HTTPS)
+  peer.on("data", (raw) => {
+    try {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === "tcp") {
+        console.log(
+          `[Host][TCP] Abrindo túnel TCP → ${msg.host}:${msg.port} (id=${msg.id})`
+        );
+        const sock = net.connect(msg.port, msg.host, () => {
+          console.log("[Host][TCP] Conexão TCP estabelecida, enviando ACK");
+          peer.send(JSON.stringify({ type: "tcp-ack", id: msg.id }));
+        });
+        // encaminha dados do peer ao socket
+        peer.on("data", (chunk) => {
+          if (!Buffer.isBuffer(chunk)) return;
+          sock.write(chunk);
+        });
+        // encaminha do socket ao peer
+        sock.on("data", (data) => peer.send(data));
+        sock.on("error", (err) => {
+          console.error("[Host][TCP] Erro no socket:", err.message);
+          peer.send(
+            JSON.stringify({
+              type: "tcp-error",
+              id: msg.id,
+              error: err.message,
+            })
+          );
+        });
+      }
+    } catch {
+      /** não-JSON: ignora */
     }
-    // … código para tcp tunnel permanece igual …
   });
 });

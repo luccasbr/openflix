@@ -1,3 +1,4 @@
+// server.ts
 import { createServer } from "http";
 import { Server, Socket } from "socket.io";
 
@@ -6,13 +7,18 @@ const httpServer = createServer();
 const io = new Server(httpServer, { cors: { origin: "*" } });
 
 io.on("connection", (socket: Socket) => {
+  console.log(`[Signal] Socket conectado: ${socket.id}`);
+
   socket.on(
     "register",
     ({ role, id }: { role: "host" | "client"; id: string }) => {
       const room = `${id}:${role}`;
       socket.join(room);
-      console.log(`[Signal] ${role.toUpperCase()} entrou na sala "${room}"`);
-      // Se ambos host e client estiverem presentes, sinaliza ready
+      console.log(
+        `[Signal] ${role.toUpperCase()} registrado na sala "${room}"`
+      );
+
+      // Se já temos host E client, emite 'ready' para ambos
       const hasHost = io.sockets.adapter.rooms.get(`${id}:host`);
       const hasClient = io.sockets.adapter.rooms.get(`${id}:client`);
       if (hasHost && hasClient) {
@@ -24,14 +30,20 @@ io.on("connection", (socket: Socket) => {
   );
 
   socket.on("signal", ({ role, id, data }: any) => {
-    const target = role === "host" ? "client" : "host";
-    io.to(`${id}:${target}`).emit("signal", data);
+    const targetRoom = `${id}:${role === "host" ? "client" : "host"}`;
+    io.to(targetRoom).emit("signal", data);
     console.log(
-      `[Signal] Relay de sinal de ${role}→${target} no túnel "${id}"`
+      `[Signal] Relay de sinal de ${role} → ${
+        role === "host" ? "client" : "host"
+      } no túnel "${id}"`
     );
+  });
+
+  socket.on("disconnect", (reason) => {
+    console.log(`[Signal] Socket desconectou: ${socket.id} (${reason})`);
   });
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`[Signal] Server rodando em http://0.0.0.0:${PORT}`);
+  console.log(`[Signal] Servidor rodando em http://0.0.0.0:${PORT}`);
 });
